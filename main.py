@@ -88,12 +88,15 @@ async def resolve_domain_to_ip(host: str) -> Optional[str]:
         return _domain_ip_cache[host]
     try:
         loop = asyncio.get_event_loop()
-        addrs = await loop.getaddrinfo(host, 443, family=socket.AF_INET)
+        addrs = await asyncio.wait_for(
+            loop.getaddrinfo(host, 443, family=socket.AF_INET),
+            timeout=3.0
+        )
         if addrs:
             ip = addrs[0][4][0]
             _domain_ip_cache[host] = ip
             return ip
-    except Exception:
+    except (asyncio.TimeoutError, Exception):
         pass
     _domain_ip_cache[host] = None
     return None
@@ -177,12 +180,6 @@ def is_domain_blocked(host: str) -> bool:
 
 # ── Quota Gate (Adaptive) ──────────────────────────────────────────────────
 class QuotaGate:
-    """
-    Adaptive batch quota checker.
-    Accumulates bytes and flushes when either the batch size
-    or a time threshold is exceeded. Batch size auto-adjusts
-    based on actual throughput using simple EWMA.
-    """
     def __init__(self, uid: str):
         self.uid = uid
         self.pending = 0
@@ -216,7 +213,6 @@ class QuotaGate:
         return True
 
     async def check(self) -> bool:
-        """Flush pending bytes and return True if quota still OK."""
         if self.pending:
             flush, self.pending = self.pending, 0
             ok = await check_quota(self.uid, flush)
@@ -234,7 +230,6 @@ class QuotaGate:
         return self.ok
 
     async def flush(self) -> bool:
-        """Force flush remaining pending bytes (usually on connection teardown)."""
         if self.pending:
             flush, self.pending = self.pending, 0
             self.ok = self.ok and await check_quota(self.uid, flush)
@@ -298,10 +293,6 @@ async def parse_vless_header_extended(chunk: bytes):
         raise ValueError(f"Unknown address type: {addr_type}")
     return command, address, port, chunk[pos:]
 async def parse_vless_header_with_uuid(chunk: bytes):
-    """
-    Returns (uuid_str, command, address, port, payload)
-    uuid_str: VLESS user UUID (standard format)
-    """
     if len(chunk) < 24:
         raise ValueError("VLESS header too small")
     pos = 1
@@ -414,7 +405,6 @@ if CONFIG["database_url"] and HAS_POSTGRES:
                     id SERIAL PRIMARY KEY, url TEXT NOT NULL
                 );
             """)
-            # Ensure all new and legacy columns exist
             for col, col_type in [
                 ("tfo", "BOOLEAN DEFAULT FALSE"),
                 ("ech_enabled", "BOOLEAN DEFAULT FALSE"),
@@ -559,7 +549,6 @@ else:
         """)
         await db_conn.commit()
 
-        # Extended columns check – safe to run even if already present
         extended_columns = [
             ("smux_enabled", "INTEGER DEFAULT 0"),
             ("ip_limit", "INTEGER DEFAULT 0"),
@@ -571,7 +560,6 @@ else:
         for col, col_def in extended_columns:
             await ensure_column_sqlite("links", col, col_def)
 
-        # Legacy columns
         legacy_columns = [
             ("tfo", "INTEGER DEFAULT 0"),
             ("ech_enabled", "INTEGER DEFAULT 0"),
@@ -591,7 +579,6 @@ else:
         for col, col_def in legacy_columns:
             await ensure_column_sqlite("links", col, col_def)
 
-        # Ensure other table columns
         await ensure_column_sqlite("daily_traffic", "uid", "TEXT DEFAULT ''")
         await ensure_column_sqlite("custom_addresses", "flag", "TEXT DEFAULT ''")
         await ensure_column_sqlite("profile_addresses", "flag", "TEXT DEFAULT ''")
@@ -732,9 +719,9 @@ async def load_initial_data():
         async with LINKS_LOCK:
             LINKS[default_uuid] = default_link
         await db_execute(
-            "INSERT INTO links (uid, label, limit_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            "INSERT INTO links (uid, label, limit_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)",
-            (default_uuid, "This Server is Free", 0, 0, now, 1, None,
+            "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)",
+            (default_uuid, "This Server is Free", 0, 0, 0, now, 1, None,
              "", "", "", "chrome",
              "#39ff14", "", "", "", "default",
              0, 0, "", "",
@@ -842,7 +829,7 @@ async def _keepalive_simple_loop():
         await asyncio.sleep(KEEP_ALIVE_INTERVAL)
         if not KEEP_ALIVE_ENABLED or KEEP_ALIVE_MODE != "simple":
             continue
-        domain = get_domain()
+        domain = get_domain(request)
         if domain == "localhost":
             continue
         try:
@@ -923,7 +910,7 @@ async def set_telegram_webhook():
         if not token_row or not token_row["value"]:
             return
         token = token_row["value"]
-        domain = get_domain()
+        domain = get_domain(request)
         webhook_url = f"https://{domain}/api/tg-webhook"
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(f"https://api.telegram.org/bot{token}/setWebhook", json={"url": webhook_url})
@@ -1318,8 +1305,8 @@ async def telegram_webhook(request: Request):
                         LINKS[uid] = link_data
                     
                     await db_execute(
-                        "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)",
+                        "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)",
                         (uid, label, link_data["limit_bytes"], link_data["used_bytes"], link_data["max_connections"], now, link_data["active"], expires,
                          link_data["custom_path"], link_data["custom_sni"], link_data["custom_host"], link_data["custom_fp"],
                          link_data["color"], link_data["flag"], link_data["fragment"], link_data["ip_profile_id"], link_data["naming_mode"],
@@ -1547,14 +1534,16 @@ async def telegram_reporter():
             except Exception:
                 pass
 
-def get_domain() -> str:
-    domain = (
-        os.environ.get("DOMAIN") or
-        os.environ.get("RENDER_EXTERNAL_URL") or
-        os.environ.get("RAILWAY_PUBLIC_DOMAIN") or
-        "localhost"
-    )
-    return domain.replace("https://", "").replace("http://", "")
+def get_domain(request: Optional[Request] = None) -> str:
+    if request and request.headers.get("host"):
+        host = request.headers["host"].split(":")[0]
+        if host not in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+            return host
+    for var in ("DOMAIN", "RAILWAY_PUBLIC_DOMAIN", "RENDER_EXTERNAL_URL"):
+        val = os.environ.get(var)
+        if val:
+            return val.replace("https://", "").replace("http://", "").rstrip("/")
+    return "localhost"
 
 def validate_address(addr: str) -> bool:
     try:
@@ -1592,11 +1581,11 @@ def get_effective_path(link: dict) -> str:
         return custom
     return DEFAULT_PATH if DEFAULT_PATH else "/ws/{uid}"
 
-def generate_vless_link(uid: str, remark: str = "SulgX", address: str = None, extra: dict = None) -> str:
-    cache_key = f"{uid}:{remark}:{address}:{json.dumps(extra) if extra else ''}"
+def generate_vless_link(uid: str, remark: str = "SulgX", address: str = None, extra: dict = None, server_domain: str = None) -> str:
+    domain = server_domain or get_domain()
+    cache_key = f"{uid}:{remark}:{address}:{domain}:" + (json.dumps(extra) if extra else '')
     if cache_key in link_cache and link_cache[cache_key]["expires"] > time.time():
         return link_cache[cache_key]["link"]
-    domain = get_domain()
     addr = address if address else domain
     path = get_effective_path(extra) if extra else DEFAULT_PATH
     path = path.replace("{uid}", uid)
@@ -1637,6 +1626,10 @@ def generate_vless_link(uid: str, remark: str = "SulgX", address: str = None, ex
             base_path = base_path[:-1]
 
         mode = protocol.replace("xhttp-", "")
+
+        if mode not in ("stream-one", "auto"):
+            base_path = f"{base_path}/{mode}/{uid}"
+
         params = {
             "encryption": "none", "security": "tls", "type": "xhttp",
             "mode": mode, "host": host, "path": base_path, "sni": sni
@@ -2622,10 +2615,10 @@ async def restore_backup(request: Request, _=Depends(require_auth)):
             alpn = link.get("alpn", "")
             port = int(link.get("port") or 443)
             await db_execute(
-                "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)",
-                (uid, label, limit_bytes, used_bytes, max_conn, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port),
-            )
+    "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES (?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES ($1,$2,$3,$4,$5,$6,TRUE,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)",
+    (uid, label, limit_bytes, 0, max_conn, now, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port),
+)
             async with LINKS_LOCK:
                 LINKS[uid] = {
                     "uid": uid, "label": label, "limit_bytes": limit_bytes, "used_bytes": used_bytes,
@@ -2640,7 +2633,6 @@ async def restore_backup(request: Request, _=Depends(require_auth)):
                     "protocol": protocol, "fingerprint": fingerprint, "alpn": alpn, "port": port,
                 }
     return {"ok": True}
-
 @app.post("/api/links")
 @limiter.limit("10/minute")
 async def create_link(request: Request, _=Depends(require_auth)):
@@ -2743,9 +2735,9 @@ async def create_link(request: Request, _=Depends(require_auth)):
     async with LINKS_LOCK:
         LINKS[uid] = link_data
     await db_execute(
-        "INSERT INTO links (uid, label, limit_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES (?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        "INSERT INTO links (uid, label, limit_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES ($1,$2,$3,$4,$5,TRUE,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)",
-        (uid, label, limit_bytes, max_conn, now, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port),
+        "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES (?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port) VALUES ($1,$2,$3,$4,$5,$6,TRUE,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)",
+        (uid, label, limit_bytes, 0, max_conn, now, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port),
     )
     extra = {"custom_path": custom_path, "custom_sni": custom_sni, "custom_host": custom_host, "custom_fp": custom_fp, "fragment": fragment,
              "tfo": tfo, "ech_enabled": ech_enabled, "ech_sni": ech_sni, "ech_doh": ech_doh,
@@ -2754,6 +2746,7 @@ async def create_link(request: Request, _=Depends(require_auth)):
              "smux_enabled": smux_enabled, "ip_limit": ip_limit,
              "protocol": protocol, "fingerprint": fingerprint, "alpn": alpn, "port": port}
     log_event("Inbound", f"Created inbound {label} ({uid})")
+    domain = get_domain(request)
     return {
         "uuid": uid, "label": label, "limit_bytes": limit_bytes, "used_bytes": 0,
         "max_connections": max_conn, "active": True, "created_at": now,
@@ -2764,15 +2757,16 @@ async def create_link(request: Request, _=Depends(require_auth)):
         "allow_insecure": bool(allow_insecure), "random_path": bool(random_path), "enable_ipv6": bool(enable_ipv6),
         "smux_enabled": bool(smux_enabled), "ip_limit": ip_limit,
         "protocol": protocol, "fingerprint": fingerprint, "alpn": alpn, "port": port,
-        "vless_link": generate_vless_link(uid, remark=f"SulgX-{label}", extra=extra),
+        "vless_link": generate_vless_link(uid, remark=f"SulgX-{label}", extra=extra, server_domain=domain),
     }
 
 
 @app.get("/api/links")
-async def list_links(_=Depends(require_auth)):
+async def list_links(request: Request, _=Depends(require_auth)):
     async with LINKS_LOCK:
         items = list(LINKS.values())
     items.sort(key=lambda x: x["created_at"], reverse=True)
+    domain = get_domain(request)
     result = []
     for row in items:
         uid = row["uid"]
@@ -2818,7 +2812,7 @@ async def list_links(_=Depends(require_auth)):
             "ip_profile_id": row.get("ip_profile_id", ""),
             "naming_mode": row.get("naming_mode", "default"),
             "current_connections": await count_connections_for_link(uid),
-            "vless_link": generate_vless_link(uid, remark=f"SulgX-{row['label']}", extra=extra),
+            "vless_link": generate_vless_link(uid, remark=f"SulgX-{row['label']}", extra=extra, server_domain=domain),
             "tfo": bool(extra["tfo"]),
             "ech_enabled": bool(extra["ech_enabled"]),
             "ech_sni": extra["ech_sni"],
@@ -2997,7 +2991,7 @@ async def toggle_link(uid: str, request: Request, _=Depends(require_auth)):
     # --- collect all supported fields ---
     field_map = {
         "active": ("active", int),
-        "limit_value": None,  # handled separately
+        "limit_value": None,
         "reset_usage": None,
         "label": ("label", str),
         "max_connections": ("max_connections", int),
@@ -3005,7 +2999,7 @@ async def toggle_link(uid: str, request: Request, _=Depends(require_auth)):
         "custom_path": ("custom_path", str),
         "custom_sni": ("custom_sni", str),
         "custom_host": ("custom_host", str),
-        "custom_fp": ("fingerprint", str),   # legacy
+        "custom_fp": ("fingerprint", str),
         "color": ("color", str),
         "flag": ("flag", str),
         "fragment": ("fragment", str),
@@ -3622,7 +3616,7 @@ async def create_sub(request: Request, _=Depends(require_auth)):
             "link_ids": [],
         }
     await save_subs()
-    host = get_domain()
+    host = get_domain(request)
     return {
         "sub_id": sub_id,
         **SUBS[sub_id],
@@ -3671,13 +3665,13 @@ async def sub_group_subscription(uuid_key: str, request: Request):
     if sub.get("password_hash"):
         if not pw or not bcrypt.checkpw(pw.encode(), sub["password_hash"].encode()):
             raise HTTPException(status_code=403, detail="wrong password")
-    host = get_domain()
+    host = get_domain(request)
     lines = []
     for lid in sub.get("link_ids", []):
         async with LINKS_LOCK:
             link = LINKS.get(lid)
         if link and link["active"]:
-            lines.append(generate_vless_link(lid, remark=link["label"], extra=link))
+            lines.append(generate_vless_link(lid, remark=link["label"], extra=link, server_domain=host))
     content = base64.b64encode("\n".join(lines).encode()).decode()
     return Response(content=content, media_type="text/plain")
 
@@ -3703,11 +3697,14 @@ async def user_dashboard(uid: str, request: Request):
     limit = link["limit_bytes"]
     usage_percent = 0 if limit == 0 else min(100, round(used / limit * 100, 1))
     usage_bar_color = "#4ade80" if usage_percent < 80 else ("#fbbf24" if usage_percent < 95 else "#f87171")
-    vless_link = generate_vless_link(uid, remark=link["label"])
-    sub_url = f"https://{get_domain()}/sub/{uid}"
-    clash_url = f"https://{get_domain()}/sub/{uid}/clash"
-    singbox_url = f"https://{get_domain()}/sub/{uid}/singbox"
-    auto_url = f"https://{get_domain()}/sub/{uid}/auto"
+
+    domain = get_domain(request)
+
+    vless_link = generate_vless_link(uid, remark=link["label"], server_domain=domain)
+    sub_url = f"https://{domain}/sub/{uid}"
+    clash_url = f"https://{domain}/sub/{uid}/clash"
+    singbox_url = f"https://{domain}/sub/{uid}/singbox"
+    auto_url = f"https://{domain}/sub/{uid}/auto"
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=250x250&data={quote(sub_url)}"
     expiry_str = "Unlimited ∞" if not expires else expires.strftime("%Y-%m-%d %H:%M (UTC)")
     daily_usage = await db_fetchall(
@@ -4031,7 +4028,8 @@ async def user_subscription(uid: str, request: Request):
         "alpn": link.get("alpn", ""),
         "port": link.get("port", 443),
     }
-    sub_content = await generate_subscription_content(link, uid, addresses, extra, status)
+    domain = get_domain(request)
+    sub_content = await generate_subscription_content(link, uid, addresses, extra, status, server_domain=domain)
     encoded = base64.b64encode(sub_content.encode()).decode()
     total_bytes = link["limit_bytes"] if link["limit_bytes"] > 0 else UNLIMITED_QUOTA_BYTES
     expire_ts = int(expires.timestamp()) if expires else 0
@@ -4066,7 +4064,7 @@ async def clash_subscription(uid: str, request: Request):
         if not link or not link["active"]:
             raise HTTPException(status_code=404, detail="link not found or disabled")
         link = dict(link)
-    domain = get_domain()
+    domain = get_domain(request)
     ip_profile_id = link.get("ip_profile_id")
     if ip_profile_id:
         async with IP_PROFILES_LOCK:
@@ -4268,7 +4266,7 @@ async def singbox_subscription(uid: str, request: Request):
             raise HTTPException(status_code=404, detail="link not found or disabled")
         link = dict(link)
 
-    domain = get_domain()
+    domain = get_domain(request)
     ip_profile_id = link.get("ip_profile_id")
     if ip_profile_id:
         async with IP_PROFILES_LOCK:
@@ -4322,7 +4320,6 @@ async def singbox_subscription(uid: str, request: Request):
     random_path = link.get("random_path", False)
     smux_enabled = link.get("smux_enabled", False)
 
-    # ── fingerprint و alpn را از link می‌خوانیم و در صورت none خالی می‌کنیم
     fingerprint = link.get("fingerprint", "chrome")
     alpn = link.get("alpn", "http/1.1")
     if not fingerprint or fingerprint.lower() == "none":
@@ -4349,7 +4346,6 @@ async def singbox_subscription(uid: str, request: Request):
         if random_path:
             path = "/" + secrets.token_hex(4) + path
 
-        # دیکشنری پایه proxy بدون utls
         proxy = {
             "type": "vless",
             "tag": name,
@@ -4369,7 +4365,6 @@ async def singbox_subscription(uid: str, request: Request):
             }
         }
 
-        # شرط fingerprint: اگر مقدار داشت utls فعال وگرنه غیرفعال
         if fingerprint:
             proxy["tls"]["utls"] = {
                 "enabled": True,
@@ -4539,7 +4534,7 @@ def parse_address_entry(entry: str) -> dict:
     return {"address": ip, "name": name, "flag": flag, "sort_number": sort_num}
 
 
-async def generate_subscription_content(link: dict, uid: str, addresses: list, extra: dict = None, status: str = "active") -> str:
+async def generate_subscription_content(link: dict, uid: str, addresses: list, extra: dict = None, status: str = "active", server_domain: str = None) -> str:
     used = link["used_bytes"]; limit = link["limit_bytes"]
     usage_str = f"{_fmt_bytes(used)} / ∞" if limit == 0 else f"{_fmt_bytes(used)} / {_fmt_bytes(limit)}"
     secs_left = seconds_until_expiry(link.get("expires_at"))
@@ -4588,8 +4583,8 @@ async def generate_subscription_content(link: dict, uid: str, addresses: list, e
         if '/' in entry["address"]:
             entry["address"] = entry["address"].split('/')[0]
 
-    status_node = generate_vless_link(uid, remark=full_remark, address="0.0.0.0", extra=extra)
-    server_node = generate_vless_link(uid, remark=f"{flag_emoji}This Service is Free" if flag_emoji else "This Service is Free", extra=extra)
+    status_node = generate_vless_link(uid, remark=full_remark, address="0.0.0.0", extra=extra, server_domain=server_domain)
+    server_node = generate_vless_link(uid, remark=f"{flag_emoji}This Service is Free" if flag_emoji else "This Service is Free", extra=extra, server_domain=server_domain)
     links = [status_node, server_node]
 
     for i, entry in enumerate(address_entries):
@@ -4618,7 +4613,7 @@ async def generate_subscription_content(link: dict, uid: str, addresses: list, e
                     remark = f"{addr_flag_emoji} {remark}"
                 elif flag_emoji:
                     remark = f"{flag_emoji} {remark}"
-        links.append(generate_vless_link(uid, remark=remark, address=addr, extra=extra))
+        links.append(generate_vless_link(uid, remark=remark, address=addr, extra=extra, server_domain=server_domain))
     return "\n".join(links)
 
 def _fmt_bytes(b: int) -> str:
@@ -4803,7 +4798,6 @@ async def test_inbound(uid: str, request: Request, _=Depends(require_auth)):
     async def check_single(addr: str):
         try:
             host = addr.split(':')[0]
-            # تست TCP با timeout کوتاه
             start = time.time()
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, 443), timeout=5
@@ -4826,7 +4820,6 @@ async def test_inbound(uid: str, request: Request, _=Depends(require_auth)):
         "reachable_count": len(reachable),
         "results": sorted_results
     }
-
 # ═══════════════════════════════════════════════════════════════
 # XHTTP session management
 # ═══════════════════════════════════════════════════════════════
@@ -4847,7 +4840,6 @@ async def _teardown_xhttp(session_id: str):
     if not sess:
         return
     sess["closed"] = True
-    # Cancel both relay tasks if still running
     for t in ("uplink_task", "downlink_task"):
         task = sess.get(t)
         if task and not task.done():
@@ -4856,7 +4848,6 @@ async def _teardown_xhttp(session_id: str):
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
-    # Close the TCP writer if present
     writer = sess.get("writer")
     if writer:
         try:
@@ -4864,14 +4855,17 @@ async def _teardown_xhttp(session_id: str):
             await writer.wait_closed()
         except Exception:
             pass
-    # Unblock the downlink generator (waiting on down_q.get())
     down_q = sess.get("down_q")
     if down_q:
-        try:
-            down_q.put_nowait(None)
-        except asyncio.QueueFull:
-            pass
-    # Remove the connection record
+        while True:
+            try:
+                down_q.put_nowait(None)
+                break
+            except asyncio.QueueFull:
+                try:
+                    down_q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
     connections.pop(sess.get("conn_id"), None)
     logger.info(f"XHTTP session [{session_id[:8]}] closed")
 
@@ -5195,6 +5189,19 @@ async def websocket_tunnel(websocket: WebSocket, uuid: str):
             await websocket.close(code=1008, reason="blocked domain")
             return
 
+        # ---------- SSRF Protection (added) ----------
+        try:
+            ip_addr = await resolve_domain_to_ip(address)
+            if ip_addr:
+                ip_obj = ipaddress.ip_address(ip_addr)
+                if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+                    await websocket.close(code=1008, reason="access to private network denied")
+                    log_event("Tunnel", f"Blocked SSRF attempt to {address} from {client_ip}", ip=client_ip)
+                    return
+        except ValueError:
+            pass
+        # -------------------------------------------
+
         conn_id = secrets.token_urlsafe(8)
         now = time.time()
         async with connections_lock:
@@ -5207,7 +5214,7 @@ async def websocket_tunnel(websocket: WebSocket, uuid: str):
             link_ip_map[uuid].add(client_ip)
         stats["total_requests"] += 1
 
-        if command == 2:  # UDP
+        if command == 2:
             loop = asyncio.get_event_loop()
             if ':' in address:
                 udp_sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
@@ -5218,7 +5225,7 @@ async def websocket_tunnel(websocket: WebSocket, uuid: str):
             down_task = asyncio.create_task(udp_from_socket(websocket, udp_sock, conn_id, uuid))
             done, pending = await asyncio.wait({up_task, down_task}, return_when=asyncio.FIRST_COMPLETED)
             for t in pending: t.cancel()
-        else:  # TCP
+        else:
             gate = QuotaGate(uuid)
             if initial_payload:
                 await gate.add(len(initial_payload))
@@ -5263,6 +5270,7 @@ async def websocket_tunnel(websocket: WebSocket, uuid: str):
 @app.websocket("/{rand}/ws/{uuid}")
 async def websocket_tunnel_random(websocket: WebSocket, rand: str, uuid: str):
     await websocket_tunnel(websocket, uuid)
+
 # ═══════════════════════════════════════════════════════════════
 # XHTTP Endpoints – Unified handshake via down_q, no separate queue
 # ═══════════════════════════════════════════════════════════════
@@ -5318,7 +5326,7 @@ class RawDownlinkResponse:
             await send({"type": "http.response.body", "body": b"", "more_body": False})
             await _teardown_xhttp(self.session_id)
 
-@app.get("/api/xhttp/{session_id}")
+@app.get("/xhttp/{session_id}")
 async def xhttp_downlink(session_id: str, request: Request):
     ensure_xhttp_reaper()
     ip = get_real_remote_address(request)
@@ -5383,7 +5391,7 @@ async def xhttp_downlink(session_id: str, request: Request):
     }
     return StreamingResponse(downlink_gen(), headers=resp_headers, media_type="application/octet-stream")
 
-@app.post("/api/xhttp/{session_id}/{seq}")
+@app.post("/xhttp/{session_id}/{seq}")
 async def xhttp_packet_up(session_id: str, seq: int, request: Request):
     ensure_xhttp_reaper()
     ip = get_real_remote_address(request)
@@ -5432,8 +5440,25 @@ async def xhttp_packet_up(session_id: str, seq: int, request: Request):
             await _teardown_xhttp(session_id)
             raise HTTPException(status_code=403, detail="ip limit reached")
 
+        # SSRF protection
+        try:
+            ip_addr = await resolve_domain_to_ip(target_addr)
+            if ip_addr and ipaddress.ip_address(ip_addr).is_private:
+                await _teardown_xhttp(session_id)
+                raise HTTPException(status_code=403, detail="access to private network denied")
+        except ValueError:
+            pass
+
         sess["uuid"] = user_uuid
         connections[sess["conn_id"]]["uuid"] = user_uuid
+
+        gate = QuotaGate(user_uuid)
+        if payload:
+            if not await gate.add(len(payload)):
+                await _teardown_xhttp(session_id)
+                raise HTTPException(status_code=403, detail="quota exceeded")
+        sess["quota_gate"] = gate
+        sess["seq_lock"] = asyncio.Lock()
 
         try:
             reader, writer = await asyncio.wait_for(
@@ -5444,7 +5469,6 @@ async def xhttp_packet_up(session_id: str, seq: int, request: Request):
             sess["writer"] = writer
             sess["tcp_open"] = True
 
-            await sess["down_q"].put(b"\x00\x00")
             sess["tunnel_ready"].set()
             sess["downlink_task"] = asyncio.create_task(
                 _pump_tcp_to_queue(session_id, user_uuid, reader, sess["down_q"])
@@ -5461,25 +5485,30 @@ async def xhttp_packet_up(session_id: str, seq: int, request: Request):
             await _teardown_xhttp(session_id)
             raise HTTPException(status_code=502, detail=str(e))
     else:
-        writer = sess["writer"]
-        if seq == sess["next_seq"]:
-            writer.write(body)
-            await writer.drain()
-            sess["next_seq"] += 1
-            while sess["next_seq"] in sess["seq_buf"]:
-                pending = sess["seq_buf"].pop(sess["next_seq"])
-                writer.write(pending)
-                await writer.drain()
+        gate = sess.get("quota_gate")
+        if gate and not await gate.add(len(body)):
+            await _teardown_xhttp(session_id)
+            raise HTTPException(status_code=403, detail="quota exceeded")
+        seq_lock = sess["seq_lock"]
+        async with seq_lock:
+            if seq == sess["next_seq"]:
+                sess["writer"].write(body)
+                await sess["writer"].drain()
                 sess["next_seq"] += 1
-        else:
-            if len(sess["seq_buf"]) >= 30:
-                await _teardown_xhttp(session_id)
-                raise HTTPException(status_code=400, detail="too many out-of-order packets")
-            sess["seq_buf"][seq] = body
+                while sess["next_seq"] in sess["seq_buf"]:
+                    pending = sess["seq_buf"].pop(sess["next_seq"])
+                    sess["writer"].write(pending)
+                    await sess["writer"].drain()
+                    sess["next_seq"] += 1
+            else:
+                if len(sess["seq_buf"]) >= 30:
+                    await _teardown_xhttp(session_id)
+                    raise HTTPException(status_code=400, detail="too many out-of-order packets")
+                sess["seq_buf"][seq] = body
 
     return Response(status_code=200)
 
-@app.post("/api/xhttp/{session_id}")
+@app.post("/xhttp/{session_id}")
 async def xhttp_stream_up(session_id: str, request: Request):
     ensure_xhttp_reaper()
     ip = get_real_remote_address(request)
@@ -5530,9 +5559,19 @@ async def xhttp_stream_up(session_id: str, request: Request):
                 await _teardown_xhttp(session_id)
                 raise HTTPException(status_code=403, detail="ip limit reached")
 
+            # SSRF protection
+            try:
+                ip_addr = await resolve_domain_to_ip(target_addr)
+                if ip_addr and ipaddress.ip_address(ip_addr).is_private:
+                    await _teardown_xhttp(session_id)
+                    raise HTTPException(status_code=403, detail="access to private network denied")
+            except ValueError:
+                pass
+
             sess["uuid"] = user_uuid
             connections[sess["conn_id"]]["uuid"] = user_uuid
             gate = QuotaGate(user_uuid)
+            sess["quota_gate"] = gate
 
             try:
                 reader, writer = await asyncio.wait_for(
@@ -5542,17 +5581,16 @@ async def xhttp_stream_up(session_id: str, request: Request):
                 sess["reader"] = reader
                 sess["writer"] = writer
                 sess["tcp_open"] = True
-
-                await sess["down_q"].put(b"\x00\x00")
                 sess["tunnel_ready"].set()
                 sess["downlink_task"] = asyncio.create_task(
                     _pump_tcp_to_queue(session_id, user_uuid, reader, sess["down_q"])
                 )
 
-                if not await check_quota(user_uuid, len(chunk)):
+                actual_payload_len = len(payload)
+                if not await check_quota(user_uuid, actual_payload_len):
                     await _teardown_xhttp(session_id)
                     raise HTTPException(status_code=403, detail="quota")
-                await add_usage(user_uuid, len(chunk))
+                await add_usage(user_uuid, actual_payload_len)
 
                 stats["total_requests"] += 1
                 logger.info(f"XHTTP stream-up session [{session_id[:8]}] uid={user_uuid[:8]} -> {target_addr}:{target_port}")
@@ -5611,6 +5649,19 @@ async def xhttp_stream_one(base_path: str, request: Request):
     if not is_ip_allowed(link, user_uuid, ip):
         raise HTTPException(status_code=403, detail="ip limit reached")
 
+    # SSRF protection
+    try:
+        ip_addr = await resolve_domain_to_ip(target_addr)
+        if ip_addr and ipaddress.ip_address(ip_addr).is_private:
+            raise HTTPException(status_code=403, detail="access to private network denied")
+    except ValueError:
+        pass
+
+    gate = QuotaGate(user_uuid)
+    if payload:
+        if not await gate.add(len(payload)):
+            raise HTTPException(status_code=403, detail="quota exceeded")
+
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(target_addr, target_port), timeout=TCP_CONNECT_TIMEOUT
@@ -5637,12 +5688,12 @@ async def xhttp_stream_one(base_path: str, request: Request):
         "down_q": down_q,
         "last_seen": time.time(), "conn_id": conn_id,
         "tcp_open": True, "closed": False,
+        "quota_gate": gate,
+        "handshake_sent": False,
     }
     async with XHTTP_LOCK:
         xhttp_sessions[session_id] = sess
 
-    # Put handshake FIRST, then start the pump task
-    await down_q.put(b"\x00\x00")
     sess["downlink_task"] = asyncio.create_task(
         _pump_tcp_to_queue(session_id, user_uuid, reader, down_q)
     )
@@ -5650,10 +5701,9 @@ async def xhttp_stream_one(base_path: str, request: Request):
 
     async def downlink_gen():
         try:
-            # tcp_open is already True, so no need to wait, but the loop is harmless.
-            while not sess.get("tcp_open") and not sess.get("closed"):
-                await asyncio.sleep(0.1)
-
+            if not sess["handshake_sent"]:
+                yield b"\x00\x00"
+                sess["handshake_sent"] = True
             while True:
                 chunk = await down_q.get()
                 if chunk is None:
@@ -9801,10 +9851,12 @@ async def panel_page(request: Request):
 async def dynamic_xhttp_router(full_path: str, request: Request):
     """
     Catch‑all router for XHTTP traffic.
-    Matches incoming paths against every active inbound's custom XHTTP path
-    (or the default) and dispatches to the appropriate XHTTP handler.
+    Handles three path formats:
+      - stream-one:        POST <base_path>                         (exact base path)
+      - stream-up/packet-up:
+           <base_path>/<mode>/<user_uuid>/<session_id>[/<seq>]
+      - legacy (no mode):  <base_path>/<session_id>[/<seq>]         (kept for compatibility)
     """
-    # Collect all valid XHTTP base paths from active inbounds
     base_paths = set()
     async with LINKS_LOCK:
         for uid, link in LINKS.items():
@@ -9817,12 +9869,16 @@ async def dynamic_xhttp_router(full_path: str, request: Request):
                 if bp:
                     base_paths.add(bp)
 
-    # Always consider the default XHTTP path (may be empty if not set)
     default_bp = DEFAULT_XHTTP_PATH.strip("/")
     if default_bp:
         base_paths.add(default_bp)
 
-    # Find the longest matching base path (more specific first)
+    for bp in base_paths:
+        if full_path.strip("/") == bp:
+            if request.method == "POST":
+                return await xhttp_stream_one(bp, request)
+            raise HTTPException(status_code=405, detail="Method Not Allowed")
+
     matched_base = None
     for bp in sorted(base_paths, key=lambda x: -len(x)):
         if full_path.startswith(bp + "/"):
@@ -9832,9 +9888,17 @@ async def dynamic_xhttp_router(full_path: str, request: Request):
     if not matched_base:
         raise HTTPException(status_code=404)
 
-    # Extract the remainder after the base path
     remaining = full_path[len(matched_base):].strip("/")
     parts = remaining.split("/")
+
+    VALID_MODES = {"stream-up", "packet-up", "stream-down"}
+    if parts and parts[0] in VALID_MODES:
+        if len(parts) >= 3:
+            parts = parts[2:]
+        elif len(parts) == 2:
+            parts = []
+        else:
+            parts = parts[1:] 
 
     if len(parts) == 1:
         session_id = parts[0]
@@ -9857,8 +9921,8 @@ async def dynamic_xhttp_router(full_path: str, request: Request):
     else:
         raise HTTPException(status_code=404)
 
+
 if __name__ == "__main__":
-    # Start the server directly (no subprocess) to avoid double‑initialization.
     port = int(os.environ.get("PORT", CONFIG.get("port", 8000)))
     logger.info(f"Starting SulgX Panel on port {port}")
     uvicorn.run(
