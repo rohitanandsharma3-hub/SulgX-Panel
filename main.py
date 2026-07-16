@@ -3550,30 +3550,89 @@ async def doh_handler(request: Request):
             return Response(content=result, media_type="application/dns-message")
     return Response("All upstreams failed", status_code=502)
 
-# ------------------ HTTP Proxy ------------------
+# ------------------ HTTP Proxy (Secure + Streaming) ------------------
 _HOP_BY_HOP = {"connection","keep-alive","proxy-authenticate","proxy-authorization",
                "te","trailers","transfer-encoding","upgrade","content-encoding","content-length"}
 
+http_proxy_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+
+PROXY_WHITELIST = set(
+    d.strip() for d in os.environ.get("PROXY_WHITELIST", "").split(",") if d.strip()
+) if os.environ.get("PROXY_WHITELIST") else None
+
+async def _is_safe_target(url: str) -> bool:
+    """Block private / loopback / link‑local IPs and enforce optional whitelist."""
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+    try:
+        ip = socket.gethostbyname(hostname)
+        ip_obj = ipaddress.ip_address(ip)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            return False
+    except socket.gaierror:
+        return False
+    if PROXY_WHITELIST is not None:
+        return any(hostname.endswith(d) for d in PROXY_WHITELIST)
+    return True
+
 @app.api_route("/proxy/{target_url:path}", methods=["GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"])
 @limiter.limit("30/minute")
-async def http_proxy(target_url: str, request: Request):
-    if not target_url.startswith("http"):
+async def http_proxy(target_url: str, request: Request, _=Depends(require_auth)):
+    if not target_url.startswith(("http://", "https://")):
         target_url = "https://" + target_url
+
+    if not await _is_safe_target(target_url):
+        raise HTTPException(status_code=403, detail="Target URL is not allowed")
+
+    headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in _HOP_BY_HOP and k.lower() != "host"
+    }
+
     try:
-        body = await request.body()
-        headers = {k: v for k, v in request.headers.items()
-                   if k.lower() not in _HOP_BY_HOP and k.lower() != "host"}
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            resp = await client.request(method=request.method, url=target_url,
-                                        headers=headers, content=body)
+        req = http_proxy_client.build_request(
+            method=request.method,
+            url=target_url,
+            headers=headers,
+            content=request.stream(),
+        )
+        resp = await http_proxy_client.send(req, stream=True)
         stats["total_requests"] += 1
-        return Response(content=resp.content, status_code=resp.status_code,
-                        headers={k: v for k, v in resp.headers.items()
-                                 if k.lower() not in _HOP_BY_HOP})
+
+        async def response_streamer():
+            async for chunk in resp.aiter_bytes():
+                stats["total_bytes"] += len(chunk)
+                stats["download_bytes"] += len(chunk)
+                yield chunk
+
+        response_headers = {
+            k: v for k, v in resp.headers.items()
+            if k.lower() not in _HOP_BY_HOP
+        }
+        return StreamingResponse(
+            response_streamer(),
+            status_code=resp.status_code,
+            headers=response_headers,
+        )
+    except httpx.RequestError as e:
+        stats["total_errors"] += 1
+        error_logs.append({
+            "time": datetime.now(timezone.utc).isoformat(),
+            "error": f"Proxy error: {e}",
+            "url": target_url,
+            "type": "Proxy",
+        })
+        raise HTTPException(status_code=502, detail=f"Proxy error: {e}")
     except Exception as e:
         stats["total_errors"] += 1
-        error_logs.append({"time": datetime.now(timezone.utc).isoformat(),
-                           "error": f"Proxy error: {e}", "type": "Proxy"})
+        error_logs.append({
+            "time": datetime.now(timezone.utc).isoformat(),
+            "error": f"Proxy error: {e}",
+            "url": target_url,
+            "type": "Proxy",
+        })
         raise HTTPException(status_code=502, detail=f"Proxy error: {e}")
 
 # ------------------ Blocked Domains API ------------------
@@ -5476,6 +5535,8 @@ async def xhttp_packet_up(session_id: str, seq: int, request: Request):
             stats["total_requests"] += 1
 
             if payload:
+                stats["total_bytes"] += len(payload)
+                stats["upload_bytes"] += len(payload)
                 writer.write(payload)
                 await writer.drain()
 
@@ -5492,11 +5553,15 @@ async def xhttp_packet_up(session_id: str, seq: int, request: Request):
         seq_lock = sess["seq_lock"]
         async with seq_lock:
             if seq == sess["next_seq"]:
+                stats["total_bytes"] += len(body)
+                stats["upload_bytes"] += len(body)
                 sess["writer"].write(body)
                 await sess["writer"].drain()
                 sess["next_seq"] += 1
                 while sess["next_seq"] in sess["seq_buf"]:
                     pending = sess["seq_buf"].pop(sess["next_seq"])
+                    stats["total_bytes"] += len(pending)
+                    stats["upload_bytes"] += len(pending)
                     sess["writer"].write(pending)
                     await sess["writer"].drain()
                     sess["next_seq"] += 1
@@ -5591,6 +5656,8 @@ async def xhttp_stream_up(session_id: str, request: Request):
                     await _teardown_xhttp(session_id)
                     raise HTTPException(status_code=403, detail="quota")
                 await add_usage(user_uuid, actual_payload_len)
+                stats["total_bytes"] += actual_payload_len
+                stats["upload_bytes"] += actual_payload_len
 
                 stats["total_requests"] += 1
                 logger.info(f"XHTTP stream-up session [{session_id[:8]}] uid={user_uuid[:8]} -> {target_addr}:{target_port}")
@@ -5608,6 +5675,8 @@ async def xhttp_stream_up(session_id: str, request: Request):
                 await _teardown_xhttp(session_id)
                 raise HTTPException(status_code=403, detail="quota")
             await add_usage(sess["uuid"], len(chunk))
+            stats["total_bytes"] += len(chunk)
+            stats["upload_bytes"] += len(chunk)
             sess["writer"].write(chunk)
             await sess["writer"].drain()
 
@@ -5668,6 +5737,8 @@ async def xhttp_stream_one(base_path: str, request: Request):
         )
         tune_socket(writer)
         if payload:
+            stats["total_bytes"] += len(payload)
+            stats["upload_bytes"] += len(payload)
             writer.write(payload)
             await writer.drain()
     except Exception as e:
@@ -5738,6 +5809,8 @@ async def _pump_tcp_to_queue(session_id: str, uuid: str, reader: asyncio.StreamR
             if not await gate.add(len(data)):
                 break
             await gate.flush()
+            stats["total_bytes"] += len(data)
+            stats["download_bytes"] += len(data)
             async with XHTTP_LOCK:
                 sess = xhttp_sessions.get(session_id)
             if sess:
