@@ -4208,7 +4208,7 @@ async def clash_subscription(uid: str, request: Request):
                 elif flag_emoji_link:
                     name = f"{flag_emoji_link} {name}"
             else:
-                name = f"SulgX-{link['label']}-IP{i+1}"
+                name = f"SulgX-{link['label']}-Server{i+1}"
                 if addr_flag_emoji:
                     name = f"{addr_flag_emoji} {name}"
                 elif flag_emoji_link:
@@ -4399,7 +4399,7 @@ async def singbox_subscription(uid: str, request: Request):
             if entry.get("name"):
                 name = entry["name"]
             else:
-                name = f"SulgX-{link['label']}-IP{i+1}"
+                name = f"SulgX-{link['label']}-Server{i+1}"
 
         path = get_effective_path(link).replace("{uid}", uid)
         if random_path:
@@ -4667,7 +4667,7 @@ async def generate_subscription_content(link: dict, uid: str, addresses: list, e
                 elif flag_emoji:
                     remark = f"{flag_emoji} {remark}"
             else:
-                remark = f"SulgX-{link['label']}-IP{i+1}"
+                remark = f"SulgX-{link['label']}-Server {i+1}"
                 if addr_flag_emoji:
                     remark = f"{addr_flag_emoji} {remark}"
                 elif flag_emoji:
@@ -7480,7 +7480,7 @@ example.com
         <div class="fg"><label class="fl">IP Profile</label><select class="fs" id="aip-profile"></select></div>
         <div class="fg"><label class="fl" data-en="Naming Mode" data-fa="شیوه نام‌گذاری">Naming Mode</label>
           <select class="fs" id="anaming-mode">
-            <option value="default">Default (SulgX-Name-IP1)</option>
+            <option value="default">Default (SulgX-Name-Server1)</option>
             <option value="short">Short (SXP 1, SXP 2, ...)</option>
           </select>
         </div>
@@ -7596,7 +7596,7 @@ example.com
         <div class="fg"><label class="fl">IP Profile</label><select class="fs" id="eip-profile"></select></div>
         <div class="fg"><label class="fl" data-en="Naming Mode" data-fa="شیوه نام‌گذاری">Naming Mode</label>
           <select class="fs" id="enaming-mode">
-            <option value="default">Default (SulgX-Name-IP1)</option>
+            <option value="default">Default (SulgX-Name-Server1)</option>
             <option value="short">Short (SXP 1, SXP 2, ...)</option>
           </select>
         </div>
