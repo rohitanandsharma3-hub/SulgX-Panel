@@ -4,6 +4,7 @@
 - **Progress bar and stop button for proxy testing:** Added a progress bar and a Stop button to the Proxy Lines section, with the ability to cancel an ongoing test.
 - **Automatic redirect to login page:** When the session expires (401), the user is now automatically sent to the login page.
 - **Column count mismatch fix:** Automatic synchronization of column counts and values when inserting the default link (resolves the well‑known “39 values for 40 columns” error).
+- **Multi‑IP balancer in Xray Config output:** The raw JSON config now includes all clean IPs with a standard Xray balancer, matching the behavior of Clash and Sing‑Box.
 
 ✨ **Change Log v1.5.4:**
 
