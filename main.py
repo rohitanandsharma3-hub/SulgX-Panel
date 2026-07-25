@@ -7700,17 +7700,26 @@ textarea.fi { resize: vertical; min-height: 130px; }
         <table class="tbl" id="inbound-table"><thead><tr><th><input type="checkbox" id="select-all" onchange="toggleSelectAll()"></th><th data-sort="label" onclick="sortLinks('label')"><span data-en="Name" data-fa="نام">Name</span> ↕</th><th data-en="Type" data-fa="نوع">Type</th><th data-sort="used_bytes" onclick="sortLinks('used_bytes')"><span data-en="Usage" data-fa="مصرف">Usage</span> ↕</th><th data-en="Conns" data-fa="اتصالات">Conns</th><th data-sort="expires_at" onclick="sortLinks('expires_at')"><span data-en="Expiry" data-fa="انقضا">Expiry</span> ↕</th><th data-en="Status" data-fa="وضعیت">Status</th><th data-en="Actions" data-fa="عملیات">Actions</th></tr></thead><tbody id="ltb"></tbody></table></div>
         <div class="empty" id="lempty" style="display:none;padding:30px;">No inbounds found</div>
       </div>
-      <div class="card" style="margin-top:20px;">
+<div class="card" style="margin-top:20px;">
   <div class="card-hd">
     <span class="card-title" data-en="Proxy Lines" data-fa="پروکسی لاین">Proxy Lines</span>
     <div style="display:flex; gap:6px; flex-wrap:wrap;">
       <button class="btn btn-primary btn-sm" onclick="showAddProxyMo()" data-en="+ Add Proxy" data-fa="+ افزودن پروکسی">+ Add Proxy</button>
       <button class="btn btn-outline btn-sm" onclick="testAllProxies()" data-en="Test All" data-fa="تست همه">Test All</button>
+      <button id="proxy-stop-btn" class="btn btn-danger btn-sm" style="display:none;" onclick="stopProxyTest()" data-en="Stop" data-fa="توقف">Stop</button>
       <button class="btn btn-outline btn-sm" onclick="resolveProxyFlags()" data-en="🌍 Resolve Flags" data-fa="🌍 دریافت پرچم‌ها">🌍 Resolve Flags</button>
       <button class="btn btn-danger btn-sm" onclick="deleteFailedProxies()" data-en="🗑️ Delete Failed" data-fa="🗑️ حذف خراب‌ها">🗑️ Delete Failed</button>
       <button class="btn btn-danger btn-sm" onclick="deleteSelectedProxies()" data-en="🗑️ Delete Selected" data-fa="🗑️ حذف انتخاب‌شده">🗑️ Delete Selected</button>
       <button class="btn btn-outline btn-sm" onclick="copySelectedProxies()" data-en="📋 Copy Selected" data-fa="📋 کپی انتخاب‌شده">📋 Copy Selected</button>
     </div>
+  </div>
+  <div style="display:flex; align-items:center; gap:8px; margin:10px 0;">
+    <div style="flex:1;">
+      <div class="sys-bar" style="height:6px;">
+        <div id="proxy-test-bar" class="sys-fill" style="width:0%; background:var(--primary);"></div>
+      </div>
+    </div>
+    <span id="proxy-test-percent" style="font-size:0.8rem; color:var(--text3);">0%</span>
   </div>
   <div class="tbl-wrap">
     <table class="tbl" id="proxy-lines-table">
@@ -8416,7 +8425,8 @@ const i18n = {
     create:'Create', save:'Save', cancel:'Cancel', edit:'Edit', copy:'Copy', sub:'Sub', qr:'QR', del:'Del',
     on:'On', off:'Off',
     logout: '🚪 Logout',
-    reachable:'✅ Reachable', failed:'❌ Failed'
+    reachable:'✅ Reachable', failed:'❌ Failed',
+    testing:'Testing...'
   },
   fa:{
     hoursAgo:'{n} ساعت پیش', minsAgo:'{n} دقیقه پیش', justNow:'لحظاتی پیش', updatedAt:'بروزرسانی {time}',
@@ -8426,7 +8436,8 @@ const i18n = {
     create:'ایجاد', save:'ذخیره', cancel:'انصراف', edit:'ویرایش', copy:'کپی', sub:'اشتراک', qr:'QR', del:'حذف',
     on:'روشن', off:'خاموش',
     logout: '🚪 خروج',
-    reachable:'✅ در دسترس', failed:'❌ خطا'
+    reachable:'✅ در دسترس', failed:'❌ خطا',
+    testing:'در حال تست'
   }
 };
 const stealth_i18n = {
@@ -8445,6 +8456,7 @@ const stealth_i18n = {
     'Quick Add': 'Quick Service', 'Manage VLESS Configs': 'Manage Channels',
     'This Server is Free': 'Free Service', 'Regenerate UUID': 'Refresh ID',
     'Disconnect All': 'Terminate Links',
+    testing:'Testing...'
   },
   fa: {
     hoursAgo: '{n} ساعت پیش', minsAgo: '{n} دقیقه پیش', justNow: 'لحظاتی پیش',
@@ -8461,6 +8473,7 @@ const stealth_i18n = {
     'Quick Add': 'سرویس سریع', 'Manage VLESS Configs': 'مدیریت کانال‌ها',
     'This Server is Free': 'سرویس رایگان', 'Regenerate UUID': 'تازه‌سازی شناسه',
     'Disconnect All': 'قطع تمام اتصالات',
+    testing:'در حال تست'
   }
 };
 let stealthMode = false;
@@ -8917,7 +8930,14 @@ async function checkAuth() {
 async function authenticatedFetch(url, options = {}) {
     const token = localStorage.getItem('token');
     if (!options.headers) options.headers = {};
-    if (token) options.headers['Authorization'] = `Bearer ${token}`;
+    if (token) options.headers['Authorization'] = 'Bearer ' + token;
+    if (options.signal) {
+        const originalSignal = options.signal;
+        delete options.signal;
+        const controller = new AbortController();
+        originalSignal.addEventListener('abort', () => controller.abort());
+        options.signal = controller.signal;
+    }
     const response = await fetch(url, options);
     if (response.status === 401 && !isInitialChecking) {
         localStorage.removeItem('token');
@@ -8926,6 +8946,7 @@ async function authenticatedFetch(url, options = {}) {
     }
     return response;
 }
+
 function showLogin(){isAuthenticated=false;$m('login-page').style.display='';$m('dashboard-page').style.display='none';fetch('/api/public-settings').then(r=>r.json()).then(d=>{if(d.footer_text)$m('login-custom-message').textContent=d.footer_text;}).catch(()=>{});}
 async function showDashboard(){
   isAuthenticated=true;
@@ -9575,7 +9596,11 @@ async function loadStats() {
     updChart();
     updDoughnutChart();
   } catch (err) {
-    console.error('loadStats error:', err);
+    if (err.message === 'Unauthorized') {
+      showLogin();
+    } else {
+      console.error('loadStats error:', err);
+    }
   }
 }
 function formatSpeed(bps){if(bps<1024)return bps.toFixed(1)+' B/s';const kbps=bps/1024;if(kbps<1024)return kbps.toFixed(1)+' KB/s';const mbps=kbps/1024;return mbps.toFixed(2)+' MB/s';}
@@ -10836,15 +10861,21 @@ async function deleteSelectedProxies() {
     if (!confirm('Delete selected proxies?')) return;
     const ids = Array.from(selectedProxyIds);
     try {
-        await authenticatedFetch('/api/proxy-lines/bulk-delete', {
+        const r = await authenticatedFetch('/api/proxy-lines/bulk-delete', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ids })
         });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || !data.ok) {
+            throw new Error(data.detail || data.message || 'Server error');
+        }
         selectedProxyIds.clear();
         loadProxyLines();
         toast('Deleted');
-    } catch(e) { toast('Error', true); }
+    } catch (e) {
+        toast(e.message || 'Error', true);
+    }
 }
 
 async function deleteFailedProxies() {
@@ -11057,47 +11088,93 @@ async function importProxiesBulk() {
     }
 }
 
+let proxyTestAbortController = null;
+
 async function testAllProxies() {
-    const btn = document.querySelector('[onclick="testAllProxies()"]');
-    if (btn) { 
-        btn.disabled = true;
-        btn.textContent = 'Testing all...';
+    if (proxyTestAbortController) {
+        proxyTestAbortController.abort();
+        proxyTestAbortController = null;
     }
+    proxyTestAbortController = new AbortController();
+
+    const stopBtn = document.getElementById('proxy-stop-btn');
+    const bar = document.getElementById('proxy-test-bar');
+    const percentText = document.getElementById('proxy-test-percent');
+    const btn = document.querySelector('[onclick="testAllProxies()"]');
+
+    if (btn) { btn.disabled = true; btn.textContent = t('testing'); }
+    if (stopBtn) stopBtn.style.display = 'inline-flex';
+    bar.style.width = '0%';
+    percentText.textContent = '0%';
+
     try {
-        const r = await authenticatedFetch('/api/proxy-lines/test-all', { method: 'POST' });
-        const d = await r.json();
-        if (d.results) {
-            const resultMap = new Map(d.results.map(res => [res.id, res]));
-            resultMap.forEach((res, id) => {
-                const statusEl = document.getElementById('proxy-status-' + id);
-                if (statusEl) {
-                    if (res.ok) {
-                        statusEl.innerHTML = `<span style="color:var(--green)">✅ ${res.latency_ms}ms</span>`;
+        const listResp = await authenticatedFetch('/api/proxy-lines', { signal: proxyTestAbortController.signal });
+        const listData = await listResp.json();
+        const proxies = listData.proxy_lines || [];
+        const total = proxies.length;
+        let completed = 0;
+        const results = [];
+
+        for (const proxy of proxies) {
+            if (proxyTestAbortController.signal.aborted) break;
+            try {
+                const r = await authenticatedFetch('/api/proxy-lines/' + proxy.id + '/test', {
+                    method: 'POST',
+                    signal: proxyTestAbortController.signal
+                });
+                const d = await r.json();
+                results.push({ id: proxy.id, ok: d.ok, latency_ms: d.latency_ms, error: d.error });
+                const rowStatus = document.getElementById('proxy-status-' + proxy.id);
+                if (rowStatus) {
+                    if (d.ok) {
+                        rowStatus.innerHTML = '<span style="color:var(--green)">\u2705 ' + d.latency_ms + 'ms</span>';
                     } else {
-                        statusEl.innerHTML = `<span style="color:var(--red)">❌ ${res.error || 'Failed'}</span>`;
+                        rowStatus.innerHTML = '<span style="color:var(--red)">\u274c ' + (d.error || 'Failed') + '</span>';
                     }
                 }
-            });
+            } catch (e) {
+                if (e.name === 'AbortError') break;
+                results.push({ id: proxy.id, ok: false, error: 'Request failed' });
+                const rowStatus = document.getElementById('proxy-status-' + proxy.id);
+                if (rowStatus) rowStatus.innerHTML = '<span style="color:var(--red)">\u274c Error</span>';
+            }
+            completed++;
+            const pct = Math.round((completed / total) * 100);
+            bar.style.width = pct + '%';
+            percentText.textContent = pct + '%';
+        }
+
+        if (!proxyTestAbortController.signal.aborted) {
             const tbody = document.getElementById('proxy-lines-tbody');
             const rows = Array.from(tbody.querySelectorAll('tr'));
-            rows.sort((a, b) => {
+            rows.sort(function(a, b) {
                 const idA = parseInt(a.id.replace('proxy-row-', ''));
                 const idB = parseInt(b.id.replace('proxy-row-', ''));
-                const resA = resultMap.get(idA) || {};
-                const resB = resultMap.get(idB) || {};
+                const resA = results.find(function(r) { return r.id === idA; }) || {};
+                const resB = results.find(function(r) { return r.id === idB; }) || {};
                 const latA = resA.ok ? resA.latency_ms : Infinity;
                 const latB = resB.ok ? resB.latency_ms : Infinity;
                 return latA - latB;
             });
-            rows.forEach(row => tbody.appendChild(row));
+            rows.forEach(function(row) { tbody.appendChild(row); });
+            toast('All proxies tested');
         }
-        toast('All proxies tested');
-    } catch(e) {
-        toast('Test all failed', true);
+    } catch (e) {
+        if (e.name !== 'AbortError') {
+            toast('Test failed', true);
+        }
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Test All'; }
+        if (stopBtn) stopBtn.style.display = 'none';
+        proxyTestAbortController = null;
     }
-    if (btn) { 
-        btn.disabled = false;
-        btn.textContent = 'Test All';
+}
+
+function stopProxyTest() {
+    if (proxyTestAbortController) {
+        proxyTestAbortController.abort();
+        proxyTestAbortController = null;
+        toast('Test stopped');
     }
 }
 
@@ -11235,12 +11312,21 @@ async def bulk_delete_proxy_lines(request: Request, _=Depends(require_auth)):
     ids = body.get("ids", [])
     if not isinstance(ids, list) or not ids:
         raise HTTPException(status_code=400, detail="List of IDs required")
-    placeholders = ','.join(['?'] * len(ids))
-    await db_execute(
-        f"DELETE FROM proxy_lines WHERE id IN ({placeholders})",
-        f"DELETE FROM proxy_lines WHERE id = ANY($1)",
-        (ids,) if DB_BACKEND == "sqlite" else (ids,)
-    )
+    
+    if DB_BACKEND == "sqlite":
+        placeholders = ','.join(['?'] * len(ids))
+        await db_execute(
+            f"DELETE FROM proxy_lines WHERE id IN ({placeholders})",
+            "",
+            tuple(ids)
+        )
+    else:
+        await db_execute(
+            "",
+            "DELETE FROM proxy_lines WHERE id = ANY($1)",
+            (ids,)
+        )
+    
     return {"ok": True, "deleted": len(ids)}
 
 @app.post("/api/proxy-lines/resolve-flags")
