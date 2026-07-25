@@ -792,7 +792,7 @@ async def load_initial_data():
                  0, 0, 1,
                  0, 0, "vless-ws",
                  "chrome", "", 443, None,
-                 1, 0, 0, "doh", "", ""),
+                 1, 0, 0, "doh", "", "")
             )
     total_usage = sum(link.get("used_bytes", 0) for link in LINKS.values())
     stats["total_bytes"] = total_usage
