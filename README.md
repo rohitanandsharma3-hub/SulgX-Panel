@@ -1,3 +1,15 @@
+✨ Change Log v1.5.4
+
+- **Per-Inbound Xray DNS Settings:** Added "Xray DNS Mode", "DoH URL", and "Allowed Domains" fields for each inbound. Choose between DoH (DNS over HTTPS), FakeDNS, or system DNS, with an optional custom DoH URL.
+- **Proxy Liner:** This feature lets you easily add a proxy (SOCKS or HTTP) to obtain new IPs, so your outbound traffic uses a different IP than the server. (Note: Do not use the proxy scanner for heavy tests like 500 or 1000 items; doing so may result in your account being suspended.)
+- **Domain Whitelist:** Define a list of allowed domains per inbound; only these domains are routed through the proxy, while all other traffic is sent directly (with Fragment/Noise) – ideal for selective proxy usage.
+- **Country Bypass:** Three new toggles (Bypass Iran, China, Russia) let you decide whether traffic from those countries should go directly without passing through the proxy. Applied across all subscription formats (Xray JSON, Clash Meta, Sing‑Box).
+- **Xray Config JSON Link:** A dedicated “Xray Config” button (⚙️) is now available in the inbound list and on the user dashboard, copying the direct URL of the full Xray JSON config – ready to import into v2rayNG, Nekobox, etc.
+- **UDP Unblocked:** UDP traffic is no longer blocked in any default subscription output; instead it is routed through the proxy (with optional UDP noise for DPI bypass), fixing voice calls, QUIC/HTTP3, and online games.
+- **Performance & Concurrency:** Heavy database queries for subscription endpoints are now executed outside of locks, eliminating bottlenecks during high traffic.
+- **Abuse Prevention:** Scanner and proxy-test operations now use reduced concurrency and built-in delays to avoid triggering abuse detection on hosting platforms (Railway, Render, etc.). This also applies to proxy flag retrieval.
+- **DoH Setting Persistence:** The DoH enable/disable toggle now correctly saves to the database and survives page reloads.
+
 ✨ **Change Log v1.5.3:**
 
 - **Full SplitHTTP Transport (XHTTP) Fixes:**
