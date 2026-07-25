@@ -4279,8 +4279,9 @@ h1{{color:var(--primary); font-size:1.8rem; font-weight:800; letter-spacing:-0.5
     <button class="btn btn-outline" onclick="copyToClip('{clash_url_esc}', t('clash_copied'))">🐱 <span data-en="Copy Clash" data-fa="کپی کلش">Copy Clash</span></button>
     <button class="btn btn-outline" onclick="copyToClip('{singbox_url_esc}', t('singbox_copied'))">🧩 <span data-en="Copy Sing‑Box" data-fa="کپی سینگ‌باکس">Copy Sing‑Box</span></button>
     <button class="btn btn-outline" onclick="copyToClip('{vless_link_esc}', t('vless_copied'))">📋 <span data-en="Copy VLESS" data-fa="کپی وی‌لس">Copy VLESS</span></button>
-    <button class="btn btn-outline" onclick="copyXrayConfig('{uid}')">⚙️ <span data-en="Xray Config" data-fa="کانفیگ Xray">Xray Config</span></button>
-  </div>
+    <button class="btn btn-outline" onclick="copyXrayConfig('{uid}', 'single')">⚙️ <span data-en="Xray Config" data-fa="کانفیگ Xray (تکی)">Xray Config</span></button>
+    <button class="btn btn-outline" onclick="copyXrayConfig('{uid}', 'balancer')">⚖️ <span data-en="Xray Balancer" data-fa="Xray بالانسر">Xray Balancer</span></button>
+</div>
 </div>
 <div id="toast">Copied!</div>
 <script>
@@ -4367,9 +4368,15 @@ function fallbackCopyDashboard(text, msg) {{
     document.body.removeChild(textArea);
 }}
 
-function copyXrayConfig(uid) {{
+function copyXrayConfig(uid, type) {{
     const prefix = window.panelPrefix ? '/' + window.panelPrefix : '';
-    copyToClip('https://' + location.host + prefix + '/sub/' + uid + '/xray-config', t('xray_copied'));
+    let url;
+    if (type === 'balancer') {{
+        url = 'https://' + location.host + prefix + '/sub/' + uid + '/xray-balancer';
+    }} else {{
+        url = 'https://' + location.host + prefix + '/sub/' + uid + '/xray-config';
+    }}
+    copyToClip(url, t('xray_copied'));
 }}
 
 function toast(msg, err) {{
@@ -11385,7 +11392,7 @@ async def test_all_proxy_lines(_=Depends(require_auth)):
         await asyncio.sleep(1.5)
     return {"results": results}
 
-def build_xray_config(link: dict, proxy_line: dict, request: Request, addresses: list = None) -> dict:
+def build_xray_config(link: dict, proxy_line: dict, request: Request, address: str) -> dict:
     uid = link["uid"]
     domain = get_domain(request)
     port = link.get("port", 443)
@@ -11472,8 +11479,21 @@ def build_xray_config(link: dict, proxy_line: dict, request: Request, addresses:
             "maxStreams": 0
         }
 
+    outbound = {
+        "protocol": "vless",
+        "settings": {
+            "vnext": [{
+                "address": address,
+                "port": port,
+                "users": [{"id": uid, "encryption": "none"}]
+            }]
+        },
+        "streamSettings": stream_settings,
+        "tag": "proxy"
+    }
+
     config = {
-        "remarks": f"SulgX - {link['label']}",
+        "remarks": f"SulgX - {link['label']} ({address})",
         "log": {"loglevel": "warning"},
         "inbounds": [
             {
@@ -11489,61 +11509,16 @@ def build_xray_config(link: dict, proxy_line: dict, request: Request, addresses:
                 "tag": "mixed-in"
             }
         ],
-        "outbounds": [],
+        "outbounds": [
+            outbound,
+            {"protocol": "freedom", "settings": {"domainStrategy": "UseIP"}, "tag": "direct"},
+            {"protocol": "blackhole", "settings": {"response": {"type": "http"}}, "tag": "block"}
+        ],
         "routing": {
             "domainStrategy": "IPIfNonMatch",
             "rules": []
         }
     }
-
-    target_outbound_tag = "proxy"
-
-    if addresses and len(addresses) > 0:
-        proxy_tags = []
-        for i, ip in enumerate(addresses):
-            tag_name = f"proxy-{i}"
-            proxy_tags.append(tag_name)
-            stream_copy = dict(stream_settings)
-            outbound = {
-                "protocol": "vless",
-                "settings": {
-                    "vnext": [{
-                        "address": ip,
-                        "port": port,
-                        "users": [{"id": uid, "encryption": "none"}]
-                    }]
-                },
-                "streamSettings": stream_copy,
-                "tag": tag_name
-            }
-            config["outbounds"].append(outbound)
-
-        config["routing"]["balancers"] = [
-            {
-                "tag": "balancer",
-                "selector": proxy_tags,
-                "strategy": {"type": "random"}
-            }
-        ]
-        target_outbound_tag = "balancer"
-    else:
-        config["outbounds"].append({
-            "protocol": "vless",
-            "settings": {
-                "vnext": [{
-                    "address": domain,
-                    "port": port,
-                    "users": [{"id": uid, "encryption": "none"}]
-                }]
-            },
-            "streamSettings": stream_settings,
-            "tag": target_outbound_tag
-        })
-
-    config["outbounds"].extend([
-        {"protocol": "freedom", "settings": {"domainStrategy": "UseIP"}, "tag": "direct"},
-        {"protocol": "blackhole", "settings": {"response": {"type": "http"}}, "tag": "block"}
-    ])
 
     if proxy_line and proxy_line.get("is_active"):
         proxy_out = {
@@ -11554,12 +11529,9 @@ def build_xray_config(link: dict, proxy_line: dict, request: Request, addresses:
         if proxy_line.get("username") and proxy_line.get("password"):
             proxy_out["settings"]["servers"][0]["users"] = [{"user": proxy_line["username"], "pass": proxy_line["password"]}]
         config["outbounds"].append(proxy_out)
-
-        for ob in config["outbounds"]:
-            if ob["protocol"] == "vless":
-                if "sockopt" not in ob["streamSettings"]:
-                    ob["streamSettings"]["sockopt"] = {}
-                ob["streamSettings"]["sockopt"]["dialerProxy"] = "proxy-line-out"
+        if "sockopt" not in outbound["streamSettings"]:
+            outbound["streamSettings"]["sockopt"] = {}
+        outbound["streamSettings"]["sockopt"]["dialerProxy"] = "proxy-line-out"
 
     dns_mode = link.get("xray_dns_mode", "doh")
     allowed_domains_str = link.get("xray_allowed_domains", "")
@@ -11573,9 +11545,9 @@ def build_xray_config(link: dict, proxy_line: dict, request: Request, addresses:
     if allowed_domains:
         for d in allowed_domains:
             if d.startswith("*."):
-                rules.append({"domain": [f"domain:{d[2:]}"], "outboundTag": target_outbound_tag, "type": "field"})
+                rules.append({"domain": [f"domain:{d[2:]}"], "outboundTag": "proxy", "type": "field"})
             else:
-                rules.append({"domain": [f"full:{d}"], "outboundTag": target_outbound_tag, "type": "field"})
+                rules.append({"domain": [f"full:{d}"], "outboundTag": "proxy", "type": "field"})
 
     rules.append({"domain": ["geosite:private"], "outboundTag": "direct", "type": "field"})
     rules.append({"ip": ["geoip:private"], "outboundTag": "direct", "type": "field"})
@@ -11590,10 +11562,10 @@ def build_xray_config(link: dict, proxy_line: dict, request: Request, addresses:
         rules.append({"domain": ["geosite:ru"], "outboundTag": "direct", "type": "field"})
         rules.append({"ip": ["geoip:ru"], "outboundTag": "direct", "type": "field"})
 
-    rules.append({"network": "tcp", "outboundTag": target_outbound_tag, "type": "field"})
-    rules.append({"network": "udp", "outboundTag": target_outbound_tag, "type": "field"})
+    rules.append({"network": "tcp", "outboundTag": "proxy", "type": "field"})
+    rules.append({"network": "udp", "outboundTag": "proxy", "type": "field"})
 
-    config["routing"]["rules"].extend(rules)
+    config["routing"]["rules"] = rules
 
     if dns_mode == "doh":
         doh_url = link.get("xray_doh_url") or DOH_UPSTREAMS[0] if DOH_UPSTREAMS else "https://cloudflare-dns.com/dns-query"
@@ -11613,7 +11585,7 @@ def build_xray_config(link: dict, proxy_line: dict, request: Request, addresses:
         dns_rules = [
             {"inboundTag": ["dns-in"], "outboundTag": "dns-out", "type": "field"},
             {"inboundTag": ["mixed-in"], "port": 53, "outboundTag": "dns-out", "type": "field"},
-            {"inboundTag": ["remote-dns"], "outboundTag": target_outbound_tag, "type": "field"}
+            {"inboundTag": ["remote-dns"], "outboundTag": "proxy", "type": "field"}
         ]
         for rule in reversed(dns_rules):
             config["routing"]["rules"].insert(0, rule)
@@ -11639,6 +11611,135 @@ def build_xray_config(link: dict, proxy_line: dict, request: Request, addresses:
 
     return config
 
+@app.get("/sub/{uid}/xray-balancer")
+async def xray_balancer_config(uid: str, request: Request):
+    async with LINKS_LOCK:
+        link = LINKS.get(uid)
+    if not link or not link["active"]:
+        raise HTTPException(status_code=404, detail="Link not found or disabled")
+    link = dict(link)
+
+    proxy_line = None
+    if link.get("proxy_line_id"):
+        proxy_row = await db_fetchone(
+            "SELECT * FROM proxy_lines WHERE id = ?",
+            "SELECT * FROM proxy_lines WHERE id = $1",
+            (link["proxy_line_id"],)
+        )
+        proxy_line = dict(proxy_row) if proxy_row else None
+
+    ip_profile_id = link.get("ip_profile_id")
+    addresses = []
+    if ip_profile_id:
+        profile_exists = False
+        async with IP_PROFILES_LOCK:
+            if ip_profile_id in IP_PROFILES:
+                profile_exists = True
+        if profile_exists:
+            rows = await db_fetchall(
+                "SELECT address FROM profile_addresses WHERE profile_id = ? ORDER BY sort_number ASC",
+                "SELECT address FROM profile_addresses WHERE profile_id = $1 ORDER BY sort_number ASC",
+                (ip_profile_id,)
+            )
+            addresses = [r["address"].split('/')[0] for r in rows] if rows else []
+    else:
+        async with CUSTOM_ADDRESSES_LOCK:
+            addresses_list = list(CUSTOM_ADDRESSES)
+        addresses = [a.split('/')[0] for a in addresses_list]
+
+    if not addresses:
+        addresses = [get_domain(request)]
+
+    uid_link = link["uid"]
+    domain = get_domain(request)
+    port = link.get("port", 443)
+    path = get_effective_path(link).replace("{uid}", uid_link)
+    sni = link.get("custom_sni") or domain
+    host = link.get("custom_host") or domain
+    fingerprint = link.get("fingerprint") or link.get("custom_fp") or "chrome"
+    if not fingerprint or fingerprint.lower() == "none":
+        fingerprint = "chrome"
+    allow_insecure = bool(link.get("allow_insecure", False))
+
+    stream_settings = {
+        "network": "ws" if link.get("protocol", "vless-ws") == "vless-ws" else "xhttp",
+        "security": "tls"
+    }
+    if stream_settings["network"] == "ws":
+        stream_settings["wsSettings"] = {"host": host, "path": path}
+    else:
+        base = link.get("custom_path") or DEFAULT_XHTTP_PATH
+        if not base.startswith("/"):
+            base = "/" + base
+        if base.endswith("/"):
+            base = base[:-1]
+        mode = link.get("protocol", "vless-ws").replace("xhttp-", "")
+        if mode not in ("stream-one", "auto"):
+            path = f"{base}/{mode}/{uid_link}"
+        else:
+            path = base
+        stream_settings["xhttpSettings"] = {"path": path, "host": host, "mode": mode}
+
+    tls_settings = {
+        "serverName": sni,
+        "fingerprint": fingerprint,
+        "allowInsecure": allow_insecure
+    }
+    if link.get("ech_enabled") and link.get("ech_sni"):
+        tls_settings["ech"] = {"enable": True, "sni": link["ech_sni"]}
+        if link.get("ech_doh"):
+            tls_settings["ech"]["doh"] = link["ech_doh"]
+    stream_settings["tlsSettings"] = tls_settings
+
+    outbounds = []
+    proxy_tags = []
+    for i, ip in enumerate(addresses):
+        tag_name = f"proxy-{i}"
+        proxy_tags.append(tag_name)
+        ob = {
+            "protocol": "vless",
+            "settings": {
+                "vnext": [{"address": ip, "port": port, "users": [{"id": uid_link, "encryption": "none"}]}]
+            },
+            "streamSettings": dict(stream_settings),
+            "tag": tag_name
+        }
+        outbounds.append(ob)
+
+    config = {
+        "remarks": f"SulgX - {link['label']} (Balancer)",
+        "log": {"loglevel": "warning"},
+        "inbounds": [
+            {
+                "listen": "127.0.0.1",
+                "port": 10808,
+                "protocol": "socks",
+                "settings": {"auth": "noauth", "udp": True},
+                "sniffing": {
+                    "destOverride": ["http", "tls", "quic"],
+                    "enabled": True,
+                    "routeOnly": True
+                },
+                "tag": "mixed-in"
+            }
+        ],
+        "outbounds": outbounds + [
+            {"protocol": "freedom", "settings": {"domainStrategy": "UseIP"}, "tag": "direct"},
+            {"protocol": "blackhole", "settings": {"response": {"type": "http"}}, "tag": "block"}
+        ],
+        "routing": {
+            "domainStrategy": "IPIfNonMatch",
+            "balancers": [{"tag": "balancer", "selector": proxy_tags, "strategy": {"type": "random"}}],
+            "rules": [
+                {"domain": ["geosite:private"], "outboundTag": "direct", "type": "field"},
+                {"ip": ["geoip:private"], "outboundTag": "direct", "type": "field"},
+                {"network": "tcp", "balancerTag": "balancer", "type": "field"},
+                {"network": "udp", "balancerTag": "balancer", "type": "field"}
+            ]
+        }
+    }
+
+    return JSONResponse(content=config)
 
 @app.get("/sub/{uid}/xray-config")
 async def xray_config(uid: str, request: Request):
@@ -11676,8 +11777,14 @@ async def xray_config(uid: str, request: Request):
             addresses_list = list(CUSTOM_ADDRESSES)
         addresses = [a.split('/')[0] for a in addresses_list]
 
-    config = build_xray_config(link, proxy_line, request, addresses)
-    return JSONResponse(content=config)
+    configs = []
+    for addr in addresses:
+        configs.append(build_xray_config(link, proxy_line, request, addr))
+
+    if not configs:
+        configs.append(build_xray_config(link, proxy_line, request, get_domain(request)))
+
+    return JSONResponse(content=configs)
 
 # -------------------- Panel HTML endpoints --------------------
 @app.get("/login", response_class=HTMLResponse)
