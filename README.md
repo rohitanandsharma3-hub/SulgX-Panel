@@ -1,3 +1,15 @@
+✨ **Change Log v1.5.6**
+
+- **Country Bypass Correction:** bypass fixed.
+- **Per‑Inbound UDP Control:** Added a UDP toggle to the inbound form, a `udp_enabled` database column, and conditional `packet_encoding` / routing rules across all subscription formats and the VLESS link.
+- **Ping & Statistics Support:** Injected `policy` and `stats` sections into every generated Xray JSON config so clients can display real‑time latency and traffic data.
+- **Performance Improvement on Inbound List:** Batched active‑connection counting to eliminate the N+1 query pattern, making the dashboard load significantly faster.
+- **Proxy Bulk‑Delete Stability:** The bulk‑delete endpoint now returns proper success/error responses, and the front‑end correctly refreshes the list after deletion.
+- **Session Expiry Handling:** Every authenticated API call now redirects to the login page on a 401 response, preventing a broken UI after session timeout.
+- **Proxy Test Progress & Stop:** A progress bar and a Stop button were added to the Proxy Lines section, allowing users to cancel an ongoing batch test.
+- **Default Inbound Column Mismatch Fix:** Automatic column/value synchronisation when inserting the initial “This Server is Free” link.
+- **Xray Balancer & Multi‑Config Outputs:** `/sub/{uid}/xray-balancer` provides a single load‑balanced config while `/sub/{uid}/xray-config` returns an array of individual per‑IP configs; both now include proper DNS settings.
+
 ✨ **Change Log v1.5.5:**
 
 - **Bulk proxy deletion:** Fixed bug preventing selected proxies from being deleted (server‑side correction and response validation).
