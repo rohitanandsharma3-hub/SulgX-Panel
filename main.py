@@ -981,7 +981,7 @@ async def set_telegram_webhook():
         if not token_row or not token_row["value"]:
             return
         token = token_row["value"]
-        domain = get_domain(request)
+        domain = get_domain()                          # <-- اصلاح: بدون request
         webhook_url = f"https://{domain}/api/tg-webhook"
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(f"https://api.telegram.org/bot{token}/setWebhook", json={"url": webhook_url})
@@ -1103,10 +1103,12 @@ def get_help_message(lang: str) -> str:
         "- Delete: select inbound to delete\n"
         "- Change Language: switch language"
     )
+
 def get_welcome_message(lang: str) -> str:
     if lang == "fa":
         return "به ربات مدیریت SulgX خوش آمدید.\nلطفاً یکی از گزینه‌های زیر را انتخاب کنید:"
     return "Welcome to SulgX management bot.\nPlease choose an option:"
+
 async def send_main_menu(chat_id: int, lang: str):
     help_text = get_help_message(lang)
     keyboard = {
