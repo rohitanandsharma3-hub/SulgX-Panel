@@ -5607,7 +5607,8 @@ async def ws_to_tcp(websocket, writer, conn_id, link_uid, gate=None):
             local_now = datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET)
             hour = local_now.strftime("%Y-%m-%d %H:00")
             day = local_now.strftime("%Y-%m-%d")
-            await add_traffic_to_buffer(hour, day, size, link_uid)
+            if not gate:
+                await add_traffic_to_buffer(hour, day, size, link_uid)
             try:
                 writer.write(data); await writer.drain()
             except Exception: break
@@ -5650,7 +5651,8 @@ async def tcp_to_ws(websocket, reader, conn_id, link_uid, gate=None):
             local_now = datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET)
             hour = local_now.strftime("%Y-%m-%d %H:00")
             day = local_now.strftime("%Y-%m-%d")
-            await add_traffic_to_buffer(hour, day, size, link_uid)
+            if not gate:
+                await add_traffic_to_buffer(hour, day, size, link_uid)
             try:
                 await websocket.send_bytes((b"\x00\x00" + data) if first else data)
                 first = False
