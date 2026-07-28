@@ -691,12 +691,6 @@ async def flush_traffic_buffer():
                         "INSERT INTO hourly_traffic (hour, bytes) VALUES ($1,$2) ON CONFLICT (hour) DO UPDATE SET bytes = hourly_traffic.bytes + $2",
                         (hour, bytes_val, bytes_val)
                     )
-                for day, bytes_val in traffic_buffer["daily"].items():
-                    await db_execute(
-                        "INSERT INTO daily_traffic (day, bytes) VALUES (?,?) ON CONFLICT(day) DO UPDATE SET bytes = bytes + ?",
-                        "INSERT INTO daily_traffic (day, bytes) VALUES ($1,$2) ON CONFLICT (day) DO UPDATE SET bytes = daily_traffic.bytes + $2",
-                        (day, bytes_val, bytes_val)
-                    )
                 traffic_buffer["hourly"].clear()
                 traffic_buffer["daily"].clear()
         except Exception as e:
@@ -718,12 +712,13 @@ async def sync_usage_to_db():
         await asyncio.sleep(30)
         try:
             async with LINKS_LOCK:
-                for uid, link in LINKS.items():
-                    await db_execute(
-                        "UPDATE links SET used_bytes = ? WHERE uid = ?",
-                        "UPDATE links SET used_bytes = $1 WHERE uid = $2",
-                        (link["used_bytes"], uid)
-                    )
+                snapshot = [(uid, link["used_bytes"]) for uid, link in LINKS.items()]
+            for uid, used in snapshot:
+                await db_execute(
+                    "UPDATE links SET used_bytes = ? WHERE uid = ?",
+                    "UPDATE links SET used_bytes = $1 WHERE uid = $2",
+                    (used, uid)
+                )
         except Exception as e:
             logger.error(f"sync_usage_to_db error: {e}", exc_info=True)
 
@@ -734,15 +729,16 @@ async def load_subs():
             async with aiofiles.open(SUBS_FILE, "r") as f:
                 data = await f.read()
                 SUBS = json.loads(data)
-    except:
+    except Exception as e:
+        logger.error(f"Failed to load subs: {e}")
         SUBS = {}
 
 async def save_subs():
     try:
         async with aiofiles.open(SUBS_FILE, "w") as f:
             await f.write(json.dumps(SUBS, ensure_ascii=False, indent=2))
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"Failed to save subs: {e}")
 
 async def load_initial_data():
     global DEFAULT_PATH, DOH_ENABLED, DEFAULT_XHTTP_PATH
@@ -900,7 +896,7 @@ async def _keepalive_simple_loop():
         await asyncio.sleep(KEEP_ALIVE_INTERVAL)
         if not KEEP_ALIVE_ENABLED or KEEP_ALIVE_MODE != "simple":
             continue
-        domain = get_domain(request)
+        domain = get_domain()
         if domain == "localhost":
             continue
         try:
@@ -1288,6 +1284,7 @@ class PanelPrefixMiddleware:
         await self.app(scope, receive, send)
 
 app.add_middleware(PanelPrefixMiddleware)
+
 @app.post("/api/tg-webhook")
 async def telegram_webhook(request: Request):
     try:
@@ -1374,16 +1371,20 @@ async def telegram_webhook(request: Request):
                         "smux_enabled": 0, "ip_limit": 0, "protocol": "vless-ws",
                         "fingerprint": "chrome", "alpn": "", "port": 443,
                         "proxy_line_id": None,
-                        "bypass_iran": 1 if body.get("bypass_iran", True) else 0,
-                        "bypass_china": 1 if body.get("bypass_china", False) else 0,
-                        "bypass_russia": 1 if body.get("bypass_russia", False) else 0
+                        "bypass_iran": 1,
+                        "bypass_china": 0,
+                        "bypass_russia": 0,
+                        "xray_dns_mode": "doh",
+                        "xray_doh_url": "",
+                        "xray_allowed_domains": "",
+                        "udp_enabled": 1
                     }
                     async with LINKS_LOCK:
                         LINKS[uid] = link_data
                     
                     await db_execute(
-                        "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port, proxy_line_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port, proxy_line_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)",
+                        "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port, proxy_line_id, bypass_iran, bypass_china, bypass_russia, xray_dns_mode, xray_doh_url, xray_allowed_domains, udp_enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port, proxy_line_id, bypass_iran, bypass_china, bypass_russia, xray_dns_mode, xray_doh_url, xray_allowed_domains, udp_enabled) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41)",
                         (uid, label, link_data["limit_bytes"], link_data["used_bytes"], link_data["max_connections"], now, link_data["active"], expires,
                          link_data["custom_path"], link_data["custom_sni"], link_data["custom_host"], link_data["custom_fp"],
                          link_data["color"], link_data["flag"], link_data["fragment"], link_data["ip_profile_id"], link_data["naming_mode"],
@@ -1391,7 +1392,9 @@ async def telegram_webhook(request: Request):
                          link_data["fragment_mode"], link_data["fragment_length"], link_data["fragment_interval"],
                          link_data["allow_insecure"], link_data["random_path"], link_data["enable_ipv6"],
                          link_data["smux_enabled"], link_data["ip_limit"], link_data["protocol"],
-                         link_data["fingerprint"], link_data["alpn"], link_data["port"], link_data["proxy_line_id"])
+                         link_data["fingerprint"], link_data["alpn"], link_data["port"], link_data["proxy_line_id"],
+                         link_data["bypass_iran"], link_data["bypass_china"], link_data["bypass_russia"],
+                         link_data["xray_dns_mode"], link_data["xray_doh_url"], link_data["xray_allowed_domains"], link_data["udp_enabled"])
                     )
                     
                     del TELEGRAM_USER_CREATE_STEPS[chat_id]
@@ -1451,7 +1454,7 @@ async def telegram_webhook(request: Request):
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
@@ -2336,10 +2339,10 @@ async def notify_telegram_login(ip: str, ua: str):
     if lang_row and lang_row["value"] == 'fa':
         lang = 'fa'
 
-    templates_key = f'telegram_templates_{lang}'
     tmpl_row = await db_fetchone(
-        f"SELECT value FROM settings WHERE key='{templates_key}'",
-        f"SELECT value FROM settings WHERE key='{templates_key}'"
+        "SELECT value FROM settings WHERE key = ?",
+        "SELECT value FROM settings WHERE key = $1",
+        (f"telegram_templates_{lang}",)
     )
     templates = {}
     if tmpl_row and tmpl_row["value"]:
@@ -2382,9 +2385,9 @@ async def notify_telegram_login(ip: str, ua: str):
         )
 
     msg = templates.get('login', default_login)
-    msg = msg.replace("{ip}", ip).replace("{ua}", ua).replace("{time}", now_str)
-    msg = msg.replace("{location}", location_str).replace("{isp}", isp_str).replace("{org}", org_str)
-    msg = msg.replace("{browser}", browser).replace("{os}", os_name)
+    msg = msg.replace("{ip}", html.escape(ip)).replace("{ua}", html.escape(ua)).replace("{time}", now_str)
+    msg = msg.replace("{location}", html.escape(location_str)).replace("{isp}", html.escape(isp_str)).replace("{org}", html.escape(org_str))
+    msg = msg.replace("{browser}", html.escape(browser)).replace("{os}", html.escape(os_name))
 
     prefix_row = await db_fetchone(
         "SELECT value FROM settings WHERE key='panel_prefix'",
@@ -3880,7 +3883,7 @@ async def save_doh_upstreams(request: Request, _=Depends(require_auth)):
     body = await request.json()
     upstreams = body.get("upstreams", [])
     global DOH_UPSTREAMS, DOH_ENABLED
-    DOH_UPSTREAMS = [u for u in upstreams if isinstance(u, str) and u.strip().startswith("http")]
+    DOH_UPSTREAMS = [u for u in upstreams if isinstance(u, str) and u.strip().startswith("https://")]
     await db_execute("DELETE FROM doh_upstreams", "DELETE FROM doh_upstreams")
     for u in DOH_UPSTREAMS:
         await db_execute("INSERT INTO doh_upstreams (url) VALUES (?)", "INSERT INTO doh_upstreams (url) VALUES ($1)", (u,))
@@ -5192,6 +5195,10 @@ async def scanner_ws(websocket: WebSocket):
     if STEALTH_MODE:
         await websocket.close(code=1008, reason="disabled")
         return
+    token = websocket.query_params.get("token", "")
+    if not token or not decode_jwt_token(token):
+        await websocket.close(code=1008, reason="unauthorized")
+        return
     await websocket.accept()
     tasks = []
     try:
@@ -5545,7 +5552,11 @@ async def notify_telegram_event(event: str, label: str, uid: str):
     if lang_row and lang_row["value"] == 'fa':
         lang = 'fa'
     templates_key = f'telegram_templates_{lang}'
-    tmpl_row = await db_fetchone(f"SELECT value FROM settings WHERE key='{templates_key}'", f"SELECT value FROM settings WHERE key='{templates_key}'")
+    tmpl_row = await db_fetchone(
+    "SELECT value FROM settings WHERE key = ?",
+    "SELECT value FROM settings WHERE key = $1",
+    (f"telegram_templates_{lang}",)
+)
     templates = {}
     if tmpl_row and tmpl_row["value"]:
         try: templates = json.loads(tmpl_row["value"])
@@ -7609,7 +7620,7 @@ textarea.fi { resize: vertical; min-height: 130px; }
           <text x="90" y="58" font-family="'Orbitron',sans-serif" font-size="40" font-weight="900" fill="var(--primary)" text-anchor="middle">SulgX</text>
         </svg>
         <div style="font-family:'Orbitron',sans-serif;font-size:1.5rem;font-weight:900;color:var(--primary);margin-top:12px;display:flex;align-items:center;justify-content:center;gap:8px;">
-          SulgX Panel <span style="font-size:0.8rem; font-family:'Inter'; color:var(--bg); background:var(--primary); padding:2px 6px; border-radius:4px;">V 1.5.6</span>
+          SulgX Panel <span style="font-size:0.8rem; font-family:'Inter'; color:var(--bg); background:var(--primary); padding:2px 6px; border-radius:4px;">V 1.5.7</span>
         </div>
         <div style="font-size:1rem;color:var(--text3);margin-top:8px;" data-en="Enter your password" data-fa="رمز عبور را وارد کنید">Enter your password</div>
         <div id="login-custom-message" style="margin-top:20px; text-align:center; color:var(--text3); font-size:0.9rem;"></div>
@@ -7632,7 +7643,7 @@ textarea.fi { resize: vertical; min-height: 130px; }
   <header class="header">
     <div class="header-inner">
       <div style="display:flex;align-items:center;gap:16px;">
-        <span class="logo">SulgX</span><span class="version-tag">v1.5.6</span>
+        <span class="logo">SulgX</span><span class="version-tag">v1.5.7</span>
         <span id="panel-clock" style="font-weight:600;color:var(--primary);margin-left:8px;font-size:0.9rem;"></span>
         <nav class="header-nav" id="mainNav">
           <button class="nav-link active" data-page="dashboard">
