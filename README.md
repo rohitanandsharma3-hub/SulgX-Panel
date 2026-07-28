@@ -1,3 +1,16 @@
+✨ **Change Log v1.5.7**
+
+- **Keep‑Alive Fix:** Corrected a `NameError` in the simple keep‑alive loop that prevented it from running.
+- **Telegram Bot Inbound Creation:** Fixed a crash when creating an inbound via Telegram (`NameError` on missing `body`) and completed the INSERT statement with all new columns (`udp_enabled`, `bypass_*`, etc.).
+- **Scanner WebSocket Authentication:** The scanner WebSocket now requires a valid JWT token, preventing unauthenticated use.
+- **CORS Policy Correction:** Changed `allow_credentials` to `False` to avoid browser errors caused by combining credentials with a wildcard origin.
+- **Subs File Error Handling:** Replaced bare `except:` blocks in `load_subs` and `save_subs` with proper error logging.
+- **SQL Injection Hardening:** The template lookup in `notify_telegram_event` now uses a parameterised query instead of string interpolation.
+- **DoH Upstream Validation:** Only `https://` URLs are now accepted as DoH upstreams, blocking insecure `http://` entries.
+- **Usage Sync Performance:** `sync_usage_to_db` now takes a snapshot outside the main lock, greatly reducing lock contention and dashboard response time under load.
+- **Telegram HTML Injection Prevention:** User‑controlled fields (IP, UA, location) are now HTML‑escaped before being sent as Telegram messages.
+- **Traffic Stats Consistency:** Removed duplicate daily‑traffic writes from `flush_traffic_buffer` so that monthly, daily, and per‑user usage figures always match.
+
 ✨ **Change Log v1.5.6**
 
 - **Country Bypass Correction:** bypass fixed.
