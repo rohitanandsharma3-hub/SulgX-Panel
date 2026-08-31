@@ -787,15 +787,15 @@ async def load_initial_data():
             await db_execute(
                 "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port, proxy_line_id, bypass_iran, bypass_china, bypass_russia, xray_dns_mode, xray_doh_url, xray_allowed_domains, udp_enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 "INSERT INTO links (uid, label, limit_bytes, used_bytes, max_connections, created_at, active, expires_at, custom_path, custom_sni, custom_host, custom_fp, color, flag, fragment, ip_profile_id, naming_mode, tfo, ech_enabled, ech_sni, ech_doh, fragment_mode, fragment_length, fragment_interval, allow_insecure, random_path, enable_ipv6, smux_enabled, ip_limit, protocol, fingerprint, alpn, port, proxy_line_id, bypass_iran, bypass_china, bypass_russia, xray_dns_mode, xray_doh_url, xray_allowed_domains, udp_enabled) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41)",
-                (default_uuid, "This Server is Free", 0, 0, 0, now, 1, None,
+                (default_uuid, "This Server is Free", 0, 0, 0, now, True, None,
                  "", "", "", "chrome",
                  "#39ff14", "", "", "", "default",
-                 0, 0, "", "",
+                 False, False, "", "",
                  "off", "100-200", "10-20",
-                 0, 0, 1,
-                 0, 0, "vless-ws",
+                 False, False, True,
+                 False, 0, "vless-ws",
                  "chrome", "", 443, None,
-                 1, 0, 0, "doh", "", "", 1),
+                 True, False, False, "doh", "", "", True),
             )
     total_usage = sum(link.get("used_bytes", 0) for link in LINKS.values())
     stats["total_bytes"] = total_usage
