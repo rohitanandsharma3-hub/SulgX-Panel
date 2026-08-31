@@ -102,6 +102,20 @@ async def resolve_domain_to_ip(host: str) -> Optional[str]:
     _domain_ip_cache[host] = None
     return None
 # -------------------- Configuration --------------------
+# -------------------- Wasmer PostgreSQL compatibility --------------------
+if not os.environ.get("DATABASE_URL") and os.environ.get("DB_HOST"):
+    db_user = quote(os.environ.get("DB_USERNAME", ""), safe="")
+    db_password = quote(os.environ.get("DB_PASSWORD", ""), safe="")
+    db_host = os.environ.get("DB_HOST", "")
+    db_port = os.environ.get("DB_PORT", "")
+    db_name = os.environ.get("DB_NAME", "")
+
+    if all([db_user, db_password, db_host, db_port, db_name]):
+        os.environ["DATABASE_URL"] = (
+            f"postgresql://{db_user}:{db_password}"
+            f"@{db_host}:{db_port}/{db_name}"
+            f"?sslmode=require"
+        )
 CONFIG = {
     "port": int(os.environ.get("PORT", 8000)),
     "secret_key": os.environ.get("SECRET_KEY", secrets.token_urlsafe(32)),
